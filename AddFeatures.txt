@@ -1,0 +1,38 @@
+Its a AI-powered task assistant with subtasks, function calling, and SQLite persistence: But now i want to convert this into a saas product
+in which there will be multiple roles like Superadmin, Admin/Company, Managers, Employees
+1. Superadmin
+    i) Can see client
+    ii) Can add/remove client
+    iii)See feedback
+    iv) set plan for client
+2. Admin/Company
+    i) Can add/remove Manager
+    ii) Can add/remove Employees
+    iii)Can create project
+    iv)Can assign project to Manager/Employees
+3. Manager
+    i) Can add/remove Employees
+    ii) Can create project
+    iii)Can create teams
+    iv) Can assign projects to teams
+    v)Can assign roles to employees like team lead, senior developer, backend dev, frontend dev, tester, ui/ux, etc
+    vi)Can create/remove tasks and subtasks
+4. Employee
+    i) Can see all the tasks and subtasks
+    ii) Can update the status of tasks and subtasks
+    iii)Can add comments to tasks and subtasks
+    iv)Can add attachments to tasks and subtasks
+    v)Can add time logs to tasks and subtasks
+5. Team Lead
+    i) Can see all the tasks and subtasks
+    ii) Can update the status of tasks and subtasks
+    iii)Can add comments to tasks and subtasks
+    iv)Can add attachments to tasks and subtasks
+    v)Can add time logs to tasks and subtasks
+    vi)Can create/remove tasks and subtasks
+    vii)Can update the status of tasks and subtasks
+    viii)Can add comments to tasks and subtasks
+    ix)Can add attachments to tasks and subtasks
+    x)Can add time logs to tasks and subtasks
+    xi)Can create/remove tasks and subtasks
+    
