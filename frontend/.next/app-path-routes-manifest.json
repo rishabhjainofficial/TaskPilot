@@ -1,1 +1,0 @@
-{"/_not-found/page":"/_not-found","/(auth)/login/page":"/login","/(auth)/signup/page":"/signup","/(auth)/invite/[token]/page":"/invite/[token]","/(auth)/verify-email/page":"/verify-email","/page":"/","/(app)/teams/page":"/teams","/(app)/settings/billing/page":"/settings/billing","/(app)/dashboard/page":"/dashboard","/(app)/projects/[id]/page":"/projects/[id]"}
