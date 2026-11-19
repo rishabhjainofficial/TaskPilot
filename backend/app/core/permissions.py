@@ -47,13 +47,45 @@ async def is_user_assigned_to_project(
     user_id: uuid.UUID,
     project_id: uuid.UUID,
 ) -> bool:
-    """Checks whether the user has a direct assignment to the project."""
-    stmt = select(ProjectAssignment).where(
+    """Checks whether the user has a direct assignment or a team assignment to the project."""
+    # Direct user assignment
+    stmt_user = select(ProjectAssignment).where(
         ProjectAssignment.project_id == project_id,
         ProjectAssignment.user_id == user_id,
     )
-    result = await db.execute(stmt)
-    return result.scalar_one_or_none() is not None
+    if (await db.execute(stmt_user)).scalar_one_or_none():
+        return True
+
+    # Team assignment
+    from app.db.models.team_member import TeamMember
+    stmt_team = (
+        select(ProjectAssignment)
+        .join(TeamMember, ProjectAssignment.team_id == TeamMember.team_id)
+        .where(
+            ProjectAssignment.project_id == project_id,
+            TeamMember.user_id == user_id,
+        )
+    )
+    return (await db.execute(stmt_team)).scalar_one_or_none() is not None
+
+
+async def is_user_lead_of_project(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    project_id: uuid.UUID,
+) -> bool:
+    """Checks whether user is the designated lead of any team assigned to the project."""
+    from app.db.models.team_member import TeamMember
+    stmt = (
+        select(ProjectAssignment)
+        .join(TeamMember, ProjectAssignment.team_id == TeamMember.team_id)
+        .where(
+            ProjectAssignment.project_id == project_id,
+            TeamMember.user_id == user_id,
+            TeamMember.team_role == "lead",
+        )
+    )
+    return (await db.execute(stmt)).scalar_one_or_none() is not None
 
 
 async def has_permission(
@@ -67,7 +99,8 @@ async def has_permission(
     Central permission check.
     1. If user is platform admin, they only have platform permissions, not tenant data by default.
     2. Check org role permissions from DB.
-    3. If project-scoped permission and role requires project assignment, check it.
+    3. If project-scoped permission and user is Team Lead of that project, grant lead capabilities.
+    4. If manager, enforce assignment scoping on project.
     """
     if user.is_platform_admin and permission.startswith("platform."):
         return True
@@ -79,6 +112,11 @@ async def has_permission(
     # Owner has all org permissions except when specifically constrained
     if membership.org_role == "owner":
         return True
+
+    # Check team lead permissions for project-scoped actions
+    if project_id and permission in ("task.create", "task.delete", "task.assign", "task.update_any", "task.view_all"):
+        if await is_user_lead_of_project(db, user.id, project_id):
+            return True
 
     role_perms = await load_role_permissions(db)
     allowed_perms = role_perms.get(membership.org_role, set())
@@ -99,15 +137,28 @@ async def has_permission(
 def require_permission(permission: str, project_id_param: Optional[str] = None):
     """
     FastAPI dependency factory enforcing a specific permission string.
+    Ensures tenant and user contexts are set for RLS-compliant role verification.
     """
+    from fastapi import Request
     from app.dependencies import get_current_user, get_current_org_id, get_db
+    from app.db.session import set_tenant_context
 
     async def dependency(
+        request: Request,
         user: User = Depends(get_current_user),
         org_id: uuid.UUID = Depends(get_current_org_id),
         db: AsyncSession = Depends(get_db),
     ) -> User:
-        allowed = await has_permission(user, org_id, permission, db)
+        project_id = None
+        if project_id_param:
+            raw_proj = request.path_params.get(project_id_param)
+            if raw_proj:
+                try:
+                    project_id = uuid.UUID(raw_proj)
+                except ValueError:
+                    pass
+        await set_tenant_context(db, org_id=org_id, user_id=user.id)
+        allowed = await has_permission(user, org_id, permission, db, project_id=project_id)
         if not allowed:
             raise PermissionDeniedError(permission)
         return user

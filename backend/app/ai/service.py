@@ -285,6 +285,55 @@ class AIService:
                         execution_results.append({"tool": tool, "task_id": str(t.id), "new_status": new_status})
                         break
 
+            elif tool == "assign_task":
+                if not await has_permission(user, self.org_id, "task.assign", self.db, project_id=proposal.project_id):
+                    raise PermissionDeniedError("task.assign")
+                ref = args.get("task_title_or_code", "")
+                assignee_ref = args.get("assignee_email_or_name", "")
+
+                stmt_t = select(Task).where(Task.project_id == proposal.project_id, Task.org_id == self.org_id)
+                all_tasks = list((await self.db.execute(stmt_t)).scalars().all())
+                target_task = None
+                for t in all_tasks:
+                    if ref.lower() in t.title.lower() or str(t.task_number) in ref:
+                        target_task = t
+                        break
+
+                if target_task:
+                    from app.db.models.team_member import TeamMember
+                    from app.db.models.project_assignment import ProjectAssignment
+
+                    # 1. Role-aware resolution by job_title in teams assigned to project
+                    stmt_tm = (
+                        select(TeamMember, User)
+                        .join(User, TeamMember.user_id == User.id)
+                        .join(ProjectAssignment, TeamMember.team_id == ProjectAssignment.team_id)
+                        .where(
+                            ProjectAssignment.project_id == proposal.project_id,
+                            TeamMember.org_id == self.org_id,
+                            func.lower(TeamMember.job_title).contains(assignee_ref.lower()),
+                        )
+                    )
+                    matching_role = (await self.db.execute(stmt_tm)).first()
+
+                    target_user = None
+                    if matching_role:
+                        target_user = matching_role[1]
+                    else:
+                        stmt_u = select(User).where(
+                            (func.lower(User.email) == assignee_ref.lower()) |
+                            (func.lower(User.full_name) == assignee_ref.lower())
+                        )
+                        target_user = (await self.db.execute(stmt_u)).scalar_one_or_none()
+
+                    if target_user:
+                        await task_service.assign_task(user.id, target_task.id, target_user.id)
+                        execution_results.append({
+                            "tool": "assign_task",
+                            "task_id": str(target_task.id),
+                            "assigned_to": target_user.email,
+                        })
+
             elif tool == "suggest_tasks":
                 if not await has_permission(user, self.org_id, "task.create", self.db, project_id=proposal.project_id):
                     raise PermissionDeniedError("task.create")

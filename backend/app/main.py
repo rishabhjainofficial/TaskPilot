@@ -7,13 +7,17 @@ from sqlalchemy import text
 from app.auth.router import router as auth_router
 from app.config import get_settings
 from app.core.errors import AppError
-from app.core.middleware import RequestContextMiddleware
+from app.core.middleware import RequestContextMiddleware, TenantRateLimitMiddleware
 from app.db.session import engine
 from app.me.router import router as me_router
 from app.organizations.router import router as org_router
 from app.projects.router import router as project_router
 from app.tasks.router import router as task_router
+from app.teams.router import router as teams_router
 from app.ai.router import router as ai_router
+from app.billing.router import router as billing_router
+from app.notifications.router import router as notifications_router
+from app.core.ws_router import ws_router
 
 settings = get_settings()
 
@@ -46,6 +50,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(RequestContextMiddleware)
+app.add_middleware(TenantRateLimitMiddleware)
 
 
 # Exception Handlers
@@ -76,5 +81,9 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(me_router, prefix="/api/v1")
 app.include_router(org_router, prefix="/api/v1")
 app.include_router(project_router, prefix="/api/v1")
+app.include_router(teams_router, prefix="/api/v1")
 app.include_router(task_router, prefix="/api/v1")
 app.include_router(ai_router, prefix="/api/v1")
+app.include_router(billing_router, prefix="/api/v1")
+app.include_router(notifications_router, prefix="/api/v1")
+app.include_router(ws_router, prefix="/api/v1")

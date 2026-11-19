@@ -9,10 +9,12 @@ from app.auth.schemas import (
     VerifyEmailRequest,
     RefreshTokenRequest,
     AcceptInviteRequest,
+    SwitchOrgRequest,
 )
 from app.auth.service import AuthService
 from app.config import get_settings
-from app.dependencies import get_db
+from app.db.models.user import User
+from app.dependencies import get_db, get_current_user
 
 settings = get_settings()
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -94,3 +96,32 @@ async def accept_invite(body: AcceptInviteRequest, db: AsyncSession = Depends(ge
         "organization_id": membership.org_id,
         "role": membership.org_role,
     }
+
+
+@router.post("/switch-org", response_model=TokenResponse)
+async def switch_org(
+    body: SwitchOrgRequest,
+    response: Response,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    service = AuthService(db)
+    access_token, refresh_token, org, role = await service.switch_organization(user, body.org_id)
+
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        samesite="lax",
+        secure=settings.ENVIRONMENT != "development",
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+    )
+
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user_id=user.id,
+        organization_id=org.id,
+        role=role,
+    )

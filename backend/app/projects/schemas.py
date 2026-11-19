@@ -30,3 +30,15 @@ class ProjectResponse(BaseModel):
 class ProjectAssignRequest(BaseModel):
     user_id: Optional[uuid.UUID] = None
     team_id: Optional[uuid.UUID] = None
+
+
+class ProjectAssignmentResponse(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    user_id: Optional[uuid.UUID] = None
+    user_email: Optional[str] = None
+    user_full_name: Optional[str] = None
+    team_id: Optional[uuid.UUID] = None
+    team_name: Optional[str] = None
+    assigned_at: datetime
+

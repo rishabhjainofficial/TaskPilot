@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.jwt import create_access_token, create_refresh_token, decode_token
 from app.auth.passwords import hash_password, verify_password, hash_token
 from app.auth.schemas import SignupRequest, LoginRequest, AcceptInviteRequest
+from app.billing.quotas import check_quota
 from app.core.audit import log_audit_event
 from app.core.errors import AppError, UnauthorizedError
 from app.core.permissions import load_role_permissions
@@ -18,6 +19,7 @@ from app.db.models.membership import Membership
 from app.db.models.organization import Organization
 from app.db.models.subscription import Subscription
 from app.db.models.user import User
+from app.db.session import set_tenant_context, set_invitation_redeem_context
 
 
 def generate_slug(name: str) -> str:
@@ -45,6 +47,9 @@ class AuthService:
         )
         self.db.add(org)
         await self.db.flush()
+
+        # Set tenant context so RLS WITH CHECK permits inserting into tenant-scoped tables
+        await set_tenant_context(self.db, org_id=org.id)
 
         # 2. Create User
         user = User(
@@ -128,11 +133,15 @@ class AuthService:
         if not user or not verify_password(req.password, user.password_hash):
             raise UnauthorizedError("Incorrect email or password")
 
-        # Find active membership
+        # Find active membership in non-deleted organization
         query = (
             select(Membership, Organization)
             .join(Organization, Membership.org_id == Organization.id)
-            .where(Membership.user_id == user.id, Membership.status == "active")
+            .where(
+                Membership.user_id == user.id,
+                Membership.status == "active",
+                Organization.deleted_at.is_(None),
+            )
         )
         if req.organization_id:
             query = query.where(Membership.org_id == req.organization_id)
@@ -175,10 +184,13 @@ class AuthService:
         role = "member"
         if org_id:
             membership = (await self.db.execute(
-                select(Membership).where(
+                select(Membership)
+                .join(Organization, Membership.org_id == Organization.id)
+                .where(
                     Membership.user_id == user.id,
                     Membership.org_id == org_id,
                     Membership.status == "active",
+                    Organization.deleted_at.is_(None),
                 )
             )).scalar_one_or_none()
             if membership:
@@ -191,6 +203,40 @@ class AuthService:
             is_platform_admin=user.is_platform_admin,
         )
 
+    async def switch_organization(self, user: User, target_org_id: uuid.UUID) -> Tuple[str, str, Organization, str]:
+        stmt = (
+            select(Membership, Organization)
+            .join(Organization, Membership.org_id == Organization.id)
+            .where(
+                Membership.user_id == user.id,
+                Membership.org_id == target_org_id,
+                Membership.status == "active",
+                Organization.deleted_at.is_(None),
+            )
+        )
+        res = (await self.db.execute(stmt)).first()
+        if not res and not user.is_platform_admin:
+            raise AppError(status_code=403, detail="Not an active member of target organization", code="TENANT_MISMATCH")
+
+        if res:
+            membership, org = res
+            role = membership.org_role
+        else:
+            stmt_org = select(Organization).where(Organization.id == target_org_id, Organization.deleted_at.is_(None))
+            org = (await self.db.execute(stmt_org)).scalar_one_or_none()
+            if not org:
+                raise AppError(status_code=404, detail="Organization not found", code="NOT_FOUND")
+            role = "platform_admin"
+
+        access_token = create_access_token(
+            user_id=user.id,
+            org_id=org.id,
+            org_role=role,
+            is_platform_admin=user.is_platform_admin,
+        )
+        refresh_token, _ = create_refresh_token(user_id=user.id, org_id=org.id)
+        return access_token, refresh_token, org, role
+
     async def create_invitation(
         self,
         org_id: uuid.UUID,
@@ -198,6 +244,9 @@ class AuthService:
         email: str,
         role: str,
     ) -> Tuple[Invitation, str]:
+        # Enforce seat limits
+        await check_quota(self.db, org_id, "seats")
+
         # Check if already active member
         stmt = (
             select(Membership)
@@ -230,6 +279,9 @@ class AuthService:
         now = datetime.now(timezone.utc)
         hashed = hash_token(req.token)
 
+        # Allow unauthenticated invitation lookup by token
+        await set_invitation_redeem_context(self.db)
+
         stmt = select(Invitation).where(
             Invitation.token == hashed,
             Invitation.status == "pending",
@@ -238,6 +290,9 @@ class AuthService:
         invitation = (await self.db.execute(stmt)).scalar_one_or_none()
         if not invitation:
             raise AppError(status_code=400, detail="Invalid or expired invitation token", code="INVALID_INVITATION")
+
+        # Set tenant context to the invitation's org
+        await set_tenant_context(self.db, org_id=invitation.org_id)
 
         # Find or create user
         stmt_user = select(User).where(User.email == invitation.email)

@@ -52,6 +52,11 @@ class Task(Base, TimestampMixin, OrgScopedMixin):
 
     task_labels: Mapped[List["TaskLabel"]] = relationship("TaskLabel", back_populates="task", cascade="all, delete-orphan")
 
+    @property
+    def task_code(self) -> str:
+        key = self.project.key if self.project else "TASK"
+        return f"{key}-{self.task_number}"
+
     __table_args__ = (
         UniqueConstraint("project_id", "task_number", name="uq_task_project_number"),
         Index("idx_tasks_project_status", "project_id", "status"),

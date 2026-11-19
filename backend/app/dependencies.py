@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.jwt import decode_token
 from app.core.errors import UnauthorizedError, TenantMismatchError
 from app.db.models.membership import Membership
+from app.db.models.organization import Organization
 from app.db.models.user import User
 from app.db.session import AsyncSessionLocal, set_tenant_context
 
@@ -64,13 +65,20 @@ async def get_current_org_id(
     """
     Retrieves the current tenant org_id.
     Prioritizes explicit X-Org-ID if provided, otherwise token org_id.
-    Validates that the user is an active member of this organization.
+    Validates that the user is an active member of this organization,
+    and that the organization has not been soft-deleted.
     """
+    await set_tenant_context(db, user_id=user.id)
     raw_org_id = x_org_id or payload.get("org_id")
     if not raw_org_id:
         stmt = (
             select(Membership.org_id)
-            .where(Membership.user_id == user.id, Membership.status == "active")
+            .join(Organization, Membership.org_id == Organization.id)
+            .where(
+                Membership.user_id == user.id,
+                Membership.status == "active",
+                Organization.deleted_at.is_(None),
+            )
             .limit(1)
         )
         res = await db.execute(stmt)
@@ -84,14 +92,30 @@ async def get_current_org_id(
     except ValueError:
         raise TenantMismatchError()
 
-    # Verify that the user has an active membership in the target organization
-    stmt = select(Membership).where(
-        Membership.user_id == user.id,
-        Membership.org_id == target_org_id,
-        Membership.status == "active",
+    if user.is_platform_admin:
+        # Check that the target org exists and is not soft deleted
+        stmt_org = select(Organization.id).where(
+            Organization.id == target_org_id,
+            Organization.deleted_at.is_(None),
+        )
+        res_org = await db.execute(stmt_org)
+        if not res_org.scalar_one_or_none():
+            raise TenantMismatchError()
+        return target_org_id
+
+    # Verify that the user has an active membership in the target organization and org is not deleted
+    stmt = (
+        select(Membership)
+        .join(Organization, Membership.org_id == Organization.id)
+        .where(
+            Membership.user_id == user.id,
+            Membership.org_id == target_org_id,
+            Membership.status == "active",
+            Organization.deleted_at.is_(None),
+        )
     )
     result = await db.execute(stmt)
-    if not result.scalar_one_or_none() and not user.is_platform_admin:
+    if not result.scalar_one_or_none():
         raise TenantMismatchError()
 
     return target_org_id
@@ -99,8 +123,9 @@ async def get_current_org_id(
 
 async def get_tenant_db(
     org_id: uuid.UUID = Depends(get_current_org_id),
+    user: User = Depends(get_current_user),
 ) -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         async with session.begin():
-            await set_tenant_context(session, org_id)
+            await set_tenant_context(session, org_id=org_id, user_id=user.id)
             yield session

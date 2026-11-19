@@ -7,7 +7,9 @@ from sqlalchemy.orm import selectinload
 from app.core.audit import log_audit_event
 from app.core.errors import AppError, NotFoundError
 from app.db.models.project import Project
-from app.db.models.task import Task
+from app.db.models.task import Task, TaskDependency
+from app.db.models.label import Label, TaskLabel
+from app.db.models.user import User
 from app.tasks.schemas import TaskCreateRequest, TaskUpdateRequest, SubtaskCreateRequest
 
 
@@ -20,7 +22,7 @@ class TaskService:
         project.task_seq += 1
         return project.task_seq
 
-    async def list_project_tasks(self, project_id: uuid.UUID) -> List[Task]:
+    async def list_project_tasks(self, project_id: uuid.UUID, user: Optional[User] = None) -> List[Task]:
         # First verify the project exists in this tenant
         stmt_proj = select(Project).where(Project.id == project_id, Project.org_id == self.org_id)
         proj = (await self.db.execute(stmt_proj)).scalar_one_or_none()
@@ -37,6 +39,16 @@ class TaskService:
             .options(selectinload(Task.subtasks), selectinload(Task.project))
             .order_by(Task.position.asc(), Task.created_at.desc())
         )
+
+        # Strict Silo Visibility: regular members only see tasks assigned to them unless team lead
+        if user:
+            from app.core.permissions import get_user_org_membership, is_user_lead_of_project
+            membership = await get_user_org_membership(self.db, user.id, self.org_id)
+            if membership and membership.org_role == "member":
+                is_lead = await is_user_lead_of_project(self.db, user.id, project_id)
+                if not is_lead:
+                    stmt = stmt.where(Task.assignee_id == user.id)
+
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
@@ -167,6 +179,27 @@ class TaskService:
                     code="INCOMPLETE_SUBTASKS"
                 )
 
+        # Dependency Guardrail: Cannot start or complete task if blocked by incomplete tasks
+        if new_status in ("in_progress", "done"):
+            stmt_deps = (
+                select(Task)
+                .options(selectinload(Task.project))
+                .join(TaskDependency, TaskDependency.blocking_task_id == Task.id)
+                .where(
+                    TaskDependency.blocked_task_id == task_id,
+                    TaskDependency.org_id == self.org_id,
+                    Task.status != "done",
+                )
+            )
+            blocking_tasks = (await self.db.execute(stmt_deps)).scalars().all()
+            if blocking_tasks:
+                codes = ", ".join(t.task_code for t in blocking_tasks)
+                raise AppError(
+                    status_code=400,
+                    detail=f"Cannot transition task: blocked by incomplete task(s): {codes}",
+                    code="TASK_BLOCKED",
+                )
+
         task.status = new_status
 
         # If this is a subtask being updated, check if parent task auto-completes
@@ -258,3 +291,189 @@ class TaskService:
         )
         await self.db.delete(task)
         await self.db.commit()
+
+    async def add_dependency(
+        self,
+        user_id: uuid.UUID,
+        task_id: uuid.UUID,
+        blocking_task_id: uuid.UUID,
+    ) -> TaskDependency:
+        if task_id == blocking_task_id:
+            raise AppError(status_code=400, detail="A task cannot depend on itself", code="SELF_DEPENDENCY")
+
+        task = await self.get_task(task_id)
+        blocking_task = await self.get_task(blocking_task_id)
+
+        if task.project_id != blocking_task.project_id:
+            raise AppError(status_code=400, detail="Dependencies must be within the same project", code="CROSS_PROJECT_DEPENDENCY")
+
+        # Check existing
+        stmt = select(TaskDependency).where(
+            TaskDependency.blocking_task_id == blocking_task_id,
+            TaskDependency.blocked_task_id == task_id,
+            TaskDependency.org_id == self.org_id,
+        )
+        existing = (await self.db.execute(stmt)).scalar_one_or_none()
+        if existing:
+            return existing
+
+        # Cycle detection using BFS/DFS
+        visited = set()
+        queue = [blocking_task_id]
+        while queue:
+            curr = queue.pop(0)
+            if curr == task_id:
+                raise AppError(status_code=400, detail="Circular dependency detected: adding this would form a cycle", code="CIRCULAR_DEPENDENCY")
+            if curr in visited:
+                continue
+            visited.add(curr)
+            # Find all tasks that block curr (edges: previous -> curr)
+            stmt_prev = select(TaskDependency.blocking_task_id).where(
+                TaskDependency.blocked_task_id == curr,
+                TaskDependency.org_id == self.org_id,
+            )
+            for prev_id in (await self.db.execute(stmt_prev)).scalars().all():
+                if prev_id not in visited:
+                    queue.append(prev_id)
+
+        dep = TaskDependency(
+            org_id=self.org_id,
+            blocking_task_id=blocking_task_id,
+            blocked_task_id=task_id,
+        )
+        self.db.add(dep)
+        await self.db.commit()
+        return dep
+
+    async def remove_dependency(
+        self,
+        user_id: uuid.UUID,
+        task_id: uuid.UUID,
+        dependency_id: uuid.UUID,
+    ) -> None:
+        stmt = select(TaskDependency).where(
+            TaskDependency.id == dependency_id,
+            TaskDependency.blocked_task_id == task_id,
+            TaskDependency.org_id == self.org_id,
+        )
+        dep = (await self.db.execute(stmt)).scalar_one_or_none()
+        if not dep:
+            raise NotFoundError("TaskDependency", dependency_id)
+        await self.db.delete(dep)
+        await self.db.commit()
+
+    async def list_task_dependencies(self, task_id: uuid.UUID) -> dict:
+        await self.get_task(task_id)
+
+        # Blocked By (tasks that block this task)
+        stmt_blocked_by = (
+            select(TaskDependency.id, Task)
+            .options(selectinload(Task.project))
+            .join(Task, TaskDependency.blocking_task_id == Task.id)
+            .where(
+                TaskDependency.blocked_task_id == task_id,
+                TaskDependency.org_id == self.org_id,
+            )
+        )
+        blocked_by_res = await self.db.execute(stmt_blocked_by)
+        blocked_by = [
+            {
+                "id": dep_id,
+                "task_id": t.id,
+                "task_code": t.task_code,
+                "title": t.title,
+                "status": t.status,
+            }
+            for dep_id, t in blocked_by_res.all()
+        ]
+
+        # Blocking (tasks waiting on this task)
+        stmt_blocking = (
+            select(TaskDependency.id, Task)
+            .options(selectinload(Task.project))
+            .join(Task, TaskDependency.blocked_task_id == Task.id)
+            .where(
+                TaskDependency.blocking_task_id == task_id,
+                TaskDependency.org_id == self.org_id,
+            )
+        )
+        blocking_res = await self.db.execute(stmt_blocking)
+        blocking = [
+            {
+                "id": dep_id,
+                "task_id": t.id,
+                "task_code": t.task_code,
+                "title": t.title,
+                "status": t.status,
+            }
+            for dep_id, t in blocking_res.all()
+        ]
+
+        return {"blocked_by": blocked_by, "blocking": blocking}
+
+    async def get_project_dependencies(self, project_id: uuid.UUID) -> List[dict]:
+        stmt = (
+            select(TaskDependency)
+            .join(Task, TaskDependency.blocked_task_id == Task.id)
+            .where(
+                Task.project_id == project_id,
+                TaskDependency.org_id == self.org_id,
+            )
+        )
+        deps = (await self.db.execute(stmt)).scalars().all()
+        return [
+            {
+                "id": d.id,
+                "blocking_task_id": d.blocking_task_id,
+                "blocked_task_id": d.blocked_task_id,
+            }
+            for d in deps
+        ]
+
+    # Label Management
+    async def list_labels(self) -> List[Label]:
+        stmt = select(Label).where(Label.org_id == self.org_id).order_by(Label.name.asc())
+        return list((await self.db.execute(stmt)).scalars().all())
+
+    async def create_label(self, user_id: uuid.UUID, name: str, color: str = "#6b7280") -> Label:
+        clean_name = name.strip()
+        stmt = select(Label).where(Label.org_id == self.org_id, Label.name == clean_name)
+        existing = (await self.db.execute(stmt)).scalar_one_or_none()
+        if existing:
+            return existing
+        label = Label(org_id=self.org_id, name=clean_name, color=color)
+        self.db.add(label)
+        await self.db.commit()
+        return label
+
+    async def attach_label(self, user_id: uuid.UUID, task_id: uuid.UUID, label_id: uuid.UUID) -> TaskLabel:
+        await self.get_task(task_id)
+        stmt_lbl = select(Label).where(Label.id == label_id, Label.org_id == self.org_id)
+        if not (await self.db.execute(stmt_lbl)).scalar_one_or_none():
+            raise NotFoundError("Label", label_id)
+
+        stmt = select(TaskLabel).where(
+            TaskLabel.task_id == task_id,
+            TaskLabel.label_id == label_id,
+            TaskLabel.org_id == self.org_id,
+        )
+        existing = (await self.db.execute(stmt)).scalar_one_or_none()
+        if existing:
+            return existing
+
+        tl = TaskLabel(org_id=self.org_id, task_id=task_id, label_id=label_id)
+        self.db.add(tl)
+        await self.db.commit()
+        return tl
+
+    async def detach_label(self, user_id: uuid.UUID, task_id: uuid.UUID, label_id: uuid.UUID) -> None:
+        stmt = select(TaskLabel).where(
+            TaskLabel.task_id == task_id,
+            TaskLabel.label_id == label_id,
+            TaskLabel.org_id == self.org_id,
+        )
+        tl = (await self.db.execute(stmt)).scalar_one_or_none()
+        if tl:
+            await self.db.delete(tl)
+            await self.db.commit()
+

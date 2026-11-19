@@ -11,6 +11,7 @@ from app.projects.schemas import (
     ProjectUpdateRequest,
     ProjectResponse,
     ProjectAssignRequest,
+    ProjectAssignmentResponse,
 )
 from app.projects.service import ProjectService
 
@@ -131,3 +132,27 @@ async def assign_project(
         team_id=body.team_id,
     )
     return {"status": "ok", "assignment_id": assignment.id}
+
+
+@router.get("/{project_id}/assignments", response_model=List[ProjectAssignmentResponse])
+async def list_project_assignments(
+    project_id: uuid.UUID,
+    org_id: uuid.UUID = Depends(get_current_org_id),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+):
+    service = ProjectService(db, org_id)
+    return await service.list_assignments(project_id)
+
+
+@router.delete("/{project_id}/assignments/{assignment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_project_assignment(
+    project_id: uuid.UUID,
+    assignment_id: uuid.UUID,
+    org_id: uuid.UUID = Depends(get_current_org_id),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_permission("project.manage")),
+):
+    service = ProjectService(db, org_id)
+    await service.remove_assignment(user.id, project_id, assignment_id)
+

@@ -1,6 +1,7 @@
 import uuid
+from datetime import datetime
 from typing import Optional, List
-from sqlalchemy import String
+from sqlalchemy import String, DateTime
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -15,6 +16,7 @@ class Organization(Base, TimestampMixin):
     slug: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
     industry: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     settings: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
     # Relationships
     memberships: Mapped[List["Membership"]] = relationship("Membership", back_populates="organization", cascade="all, delete-orphan")

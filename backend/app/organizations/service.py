@@ -146,3 +146,18 @@ class OrganizationService:
             resource_id=membership.id,
         )
         await self.db.commit()
+
+    async def soft_delete_org(self, user_id: uuid.UUID) -> Organization:
+        org = await self.get_org()
+        org.deleted_at = datetime.now(timezone.utc)
+
+        await log_audit_event(
+            self.db,
+            user_id=user_id,
+            org_id=self.org_id,
+            action="organization.deleted",
+            resource_type="organization",
+            resource_id=org.id,
+        )
+        await self.db.commit()
+        return org

@@ -14,6 +14,13 @@ from app.db.models.subscription import Subscription
 from app.db.models.ai_conversation import AIConversation, AIMessage
 from app.db.models.ai_proposal import AIProposal
 from app.db.models.ai_usage import AIUsage
+from app.db.models.team import Team
+from app.db.models.team_member import TeamMember
+from app.db.models.task_comment import TaskComment
+from app.db.models.attachment import Attachment
+from app.db.models.time_log import TimeLog
+from app.db.models.project_document import ProjectDocument
+from app.db.models.notification import Notification
 
 __all__ = [
     "Base",
@@ -36,4 +43,11 @@ __all__ = [
     "AIMessage",
     "AIProposal",
     "AIUsage",
+    "Team",
+    "TeamMember",
+    "TaskComment",
+    "Attachment",
+    "TimeLog",
+    "ProjectDocument",
+    "Notification",
 ]

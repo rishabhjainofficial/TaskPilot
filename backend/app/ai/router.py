@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.document_plan_schemas import PlanGenerateRequest, DocumentPlanResponse
+from app.ai.document_plan_service import DocumentPlanService
 from app.ai.schemas import (
     ChatRequest,
     ChatResponse,
@@ -195,3 +197,61 @@ async def create_onboarding_starter_project(
         },
         "proposal": chat_res.proposal,
     }
+
+
+@router.post("/projects/{project_id}/documents/plan", response_model=DocumentPlanResponse)
+async def generate_document_plan(
+    project_id: uuid.UUID,
+    body: PlanGenerateRequest,
+    org_id: uuid.UUID = Depends(get_current_org_id),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+):
+    service = DocumentPlanService(db, org_id)
+    return await service.generate_plan_from_document(user.id, project_id, body)
+
+
+@router.get("/projects/{project_id}/documents")
+async def list_project_documents(
+    project_id: uuid.UUID,
+    org_id: uuid.UUID = Depends(get_current_org_id),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+):
+    service = DocumentPlanService(db, org_id)
+    docs = await service.list_documents(project_id)
+    return [
+        {
+            "id": d.id,
+            "filename": d.filename,
+            "status": d.status,
+            "summary": d.summary,
+            "proposal_id": d.proposal_id,
+            "file_size": d.file_size,
+            "created_at": d.created_at,
+        }
+        for d in docs
+    ]
+
+
+@router.get("/projects/{project_id}/documents/{document_id}")
+async def get_project_document(
+    project_id: uuid.UUID,
+    document_id: uuid.UUID,
+    org_id: uuid.UUID = Depends(get_current_org_id),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+):
+    service = DocumentPlanService(db, org_id)
+    d = await service.get_document(document_id)
+    return {
+        "id": d.id,
+        "filename": d.filename,
+        "status": d.status,
+        "summary": d.summary,
+        "proposal_id": d.proposal_id,
+        "extracted_text": d.extracted_text,
+        "file_size": d.file_size,
+        "created_at": d.created_at,
+    }
+

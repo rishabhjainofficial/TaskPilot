@@ -67,7 +67,7 @@ async def list_members(
 async def invite_member(
     body: InviteMemberRequest,
     org_id: uuid.UUID = Depends(get_current_org_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_permission("org.members.invite")),
 ):
     auth_service = AuthService(db)
@@ -109,3 +109,14 @@ async def deactivate_member(
     service = OrganizationService(db, org_id)
     await service.deactivate_member(user.id, membership_id)
     return {"status": "ok", "message": "Member deactivated successfully"}
+
+
+@router.delete("", status_code=status.HTTP_200_OK)
+async def delete_current_org(
+    org_id: uuid.UUID = Depends(get_current_org_id),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_permission("org.settings")),
+):
+    service = OrganizationService(db, org_id)
+    await service.soft_delete_org(user.id)
+    return {"status": "ok", "message": "Organization soft-deleted successfully"}

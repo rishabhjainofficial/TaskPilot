@@ -120,6 +120,11 @@ async def setup_orgs(db_session: AsyncSession, seed_permissions):
     db_session.add(org_b)
     await db_session.flush()
 
+    # Org C (for 3+ tenant peer testing)
+    org_c = Organization(name="Gamma Inc", slug="gamma-inc")
+    db_session.add(org_c)
+    await db_session.flush()
+
     # Users in Org A
     owner_a = User(email="owner@acme.com", full_name="Owner A", password_hash=hash_password("password123"), email_verified=True)
     admin_a = User(email="admin@acme.com", full_name="Admin A", password_hash=hash_password("password123"), email_verified=True)
@@ -129,7 +134,10 @@ async def setup_orgs(db_session: AsyncSession, seed_permissions):
     # User in Org B
     member_b = User(email="member@beta.com", full_name="Member B", password_hash=hash_password("password123"), email_verified=True)
 
-    db_session.add_all([owner_a, admin_a, manager_a, member_a, member_b])
+    # User in multiple orgs (Org A manager and Org C owner)
+    multi_user = User(email="multi@domain.com", full_name="Multi User", password_hash=hash_password("password123"), email_verified=True)
+
+    db_session.add_all([owner_a, admin_a, manager_a, member_a, member_b, multi_user])
     await db_session.flush()
 
     # Memberships
@@ -139,21 +147,29 @@ async def setup_orgs(db_session: AsyncSession, seed_permissions):
     db_session.add(Membership(org_id=org_a.id, user_id=member_a.id, org_role="member", status="active"))
 
     db_session.add(Membership(org_id=org_b.id, user_id=member_b.id, org_role="owner", status="active"))
+
+    # Multi-org memberships
+    db_session.add(Membership(org_id=org_a.id, user_id=multi_user.id, org_role="manager", status="active"))
+    db_session.add(Membership(org_id=org_c.id, user_id=multi_user.id, org_role="owner", status="active"))
     await db_session.commit()
 
     return {
         "org_a": org_a,
         "org_b": org_b,
+        "org_c": org_c,
         "owner_a": owner_a,
         "admin_a": admin_a,
         "manager_a": manager_a,
         "member_a": member_a,
         "member_b": member_b,
+        "multi_user": multi_user,
         "tokens": {
             "owner_a": create_access_token(owner_a.id, org_id=org_a.id, org_role="owner"),
             "admin_a": create_access_token(admin_a.id, org_id=org_a.id, org_role="admin"),
             "manager_a": create_access_token(manager_a.id, org_id=org_a.id, org_role="manager"),
             "member_a": create_access_token(member_a.id, org_id=org_a.id, org_role="member"),
             "member_b": create_access_token(member_b.id, org_id=org_b.id, org_role="owner"),
+            "multi_user_a": create_access_token(multi_user.id, org_id=org_a.id, org_role="manager"),
+            "multi_user_c": create_access_token(multi_user.id, org_id=org_c.id, org_role="owner"),
         }
     }

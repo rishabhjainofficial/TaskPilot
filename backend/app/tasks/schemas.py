@@ -67,3 +67,33 @@ class TaskResponse(BaseModel):
     ai_generated: bool
     created_at: datetime
     subtasks: List[SubtaskResponse] = []
+
+
+class TaskDependencyCreateRequest(BaseModel):
+    blocking_task_id: uuid.UUID
+
+
+class TaskDependencyItem(BaseModel):
+    id: uuid.UUID
+    task_id: uuid.UUID
+    task_code: str
+    title: str
+    status: str
+
+
+class TaskDependenciesResponse(BaseModel):
+    blocked_by: List[TaskDependencyItem] = []
+    blocking: List[TaskDependencyItem] = []
+
+
+class LabelCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50)
+    color: str = Field("#6b7280", pattern="^#[0-9a-fA-F]{6}$")
+
+
+class LabelResponse(BaseModel):
+    id: uuid.UUID
+    org_id: uuid.UUID
+    name: str
+    color: str
+

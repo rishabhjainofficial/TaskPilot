@@ -55,6 +55,10 @@ class AcceptInviteRequest(BaseModel):
     password: str = Field(min_length=8)
 
 
+class SwitchOrgRequest(BaseModel):
+    org_id: uuid.UUID
+
+
 class UserProfileResponse(BaseModel):
     id: uuid.UUID
     email: str

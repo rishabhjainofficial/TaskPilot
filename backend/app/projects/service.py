@@ -3,6 +3,7 @@ from typing import List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.billing.quotas import check_quota
 from app.core.audit import log_audit_event
 from app.core.errors import AppError, NotFoundError
 from app.db.models.project import Project
@@ -32,6 +33,9 @@ class ProjectService:
         return project
 
     async def create_project(self, user_id: uuid.UUID, req: ProjectCreateRequest) -> Project:
+        # Check per-tenant project quota
+        await check_quota(self.db, self.org_id, "projects")
+
         # Check duplicate key in org
         clean_key = req.key.strip().upper()
         stmt = select(Project).where(Project.org_id == self.org_id, Project.key == clean_key)
@@ -151,3 +155,59 @@ class ProjectService:
         self.db.add(assignment)
         await self.db.commit()
         return assignment
+
+    async def list_assignments(self, project_id: uuid.UUID) -> List[dict]:
+        await self.get_project(project_id)
+        stmt = (
+            select(ProjectAssignment)
+            .where(
+                ProjectAssignment.project_id == project_id,
+                ProjectAssignment.org_id == self.org_id,
+            )
+            .order_by(ProjectAssignment.assigned_at.asc())
+        )
+        assignments = (await self.db.execute(stmt)).scalars().all()
+
+        team_ids = [a.team_id for a in assignments if a.team_id]
+        user_ids = [a.user_id for a in assignments if a.user_id]
+
+        teams_map = {}
+        if team_ids:
+            from app.db.models.team import Team
+            team_res = await self.db.execute(select(Team).where(Team.id.in_(team_ids), Team.org_id == self.org_id))
+            teams_map = {t.id: t.name for t in team_res.scalars().all()}
+
+        users_map = {}
+        if user_ids:
+            from app.db.models.user import User
+            user_res = await self.db.execute(select(User).where(User.id.in_(user_ids)))
+            users_map = {u.id: (u.email, u.full_name) for u in user_res.scalars().all()}
+
+        results = []
+        for a in assignments:
+            item = {
+                "id": a.id,
+                "project_id": a.project_id,
+                "user_id": a.user_id,
+                "team_id": a.team_id,
+                "assigned_at": a.assigned_at,
+                "team_name": teams_map.get(a.team_id) if a.team_id else None,
+                "user_email": users_map.get(a.user_id)[0] if a.user_id and a.user_id in users_map else None,
+                "user_full_name": users_map.get(a.user_id)[1] if a.user_id and a.user_id in users_map else None,
+            }
+            results.append(item)
+        return results
+
+    async def remove_assignment(self, actor_id: uuid.UUID, project_id: uuid.UUID, assignment_id: uuid.UUID) -> None:
+        await self.get_project(project_id)
+        stmt = select(ProjectAssignment).where(
+            ProjectAssignment.id == assignment_id,
+            ProjectAssignment.project_id == project_id,
+            ProjectAssignment.org_id == self.org_id,
+        )
+        assignment = (await self.db.execute(stmt)).scalar_one_or_none()
+        if not assignment:
+            raise NotFoundError("ProjectAssignment", assignment_id)
+        await self.db.delete(assignment)
+        await self.db.commit()
+
